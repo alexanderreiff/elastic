@@ -1,8 +1,9 @@
-/*! 
+/*!
 Response types for a [search request](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html).
 */
 
 use serde::de::DeserializeOwned;
+use serde_json;
 use serde_json::{Map, Value};
 
 use common::Shards;
@@ -14,7 +15,7 @@ use std::collections::BTreeMap;
 use std::slice::Iter;
 use std::vec::IntoIter;
 
-/** 
+/**
 Response for a [search request][search-req].
 
 This is the main `struct` of the crate, provides access to the `hits` and `aggs` iterators.
@@ -41,7 +42,7 @@ let response: SearchResponse<Value> = do_request();
 for hit in response.hits() {
     let score = hit.score().unwrap_or(f32::default());
     let doc = hit.document();
-    
+
     println!("score: {}", score);
     println!("doc: {:?}", doc);
 }
@@ -59,6 +60,7 @@ pub struct SearchResponse<T> {
     #[serde(rename = "_shards")] shards: Shards,
     hits: HitsWrapper<T>,
     aggregations: Option<AggsWrapper>,
+    suggest: Option<SuggestWrapper>,
     status: Option<u16>,
 }
 
@@ -111,9 +113,9 @@ impl<T> SearchResponse<T> {
         IntoHits::new(self.hits)
     }
 
-    /** 
+    /**
     Iterate over the documents matched by the search query.
-    
+
     This iterator emits just the `_source` field for the returned hits.
     */
     pub fn documents(&self) -> Documents<T> {
@@ -125,9 +127,9 @@ impl<T> SearchResponse<T> {
         IntoDocuments::new(self.hits)
     }
 
-    /** 
+    /**
     Iterate over the aggregations in the response.
-    
+
     This Iterator transforms the tree-like JSON object into a row/table based format for use with standard iterator adaptors.
     */
     pub fn aggs(&self) -> Aggs {
@@ -139,6 +141,22 @@ impl<T> SearchResponse<T> {
     */
     pub fn aggs_raw(&self) -> Option<&Value> {
         self.aggregations.as_ref().map(|wrapper| &wrapper.0)
+    }
+
+    /**
+    Iterate over the suggestions in the response.
+
+    This Iterator transforms the tree-like JSON object into a row/table based format for use with standard iterator adaptors.
+    */
+    pub fn suggest(&self) -> Suggest<T> {
+        Suggest::new(self.suggest.as_ref())
+    }
+
+    /**
+    Get a reference to the raw suggest value.
+    */
+    pub fn suggest_raw(&self) -> Option<&Value> {
+        self.suggest.as_ref().map(|wrapper| &wrapper.0)
     }
 }
 
@@ -278,11 +296,105 @@ impl<T> Hit<T> {
     }
 }
 
+/** Full metadata and source for a single suggest option. */
+#[derive(Deserialize, Debug)]
+pub struct Suggestion<T> {
+    text: String,
+    #[serde(rename = "_index")] index: String,
+    #[serde(rename = "_type")] ty: String,
+    #[serde(rename = "_score")] score: Option<f32>,
+    #[serde(rename = "_source")] source: Option<T>,
+    #[serde(rename = "_routing")] routing: Option<String>,
+}
+
+impl<T> Suggestion<T> {
+    /** The suggested term */
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /** Get a reference to the source document. */
+    pub fn document(&self) -> Option<&T> {
+        self.source.as_ref()
+    }
+
+    /** Convert the hit into the source document. */
+    pub fn into_document(self) -> Option<T> {
+        self.source
+    }
+
+    /** The index for the hit. */
+    pub fn index(&self) -> &str {
+        &self.index
+    }
+
+    /** The type of the hit. */
+    pub fn ty(&self) -> &str {
+        &self.ty
+    }
+
+    /** The score of the hit. */
+    pub fn score(&self) -> Option<f32> {
+        self.score.clone()
+    }
+}
+
+/** Wrapper for results for a completion suggester. */
+#[derive(Deserialize, Debug)]
+pub struct SuggestionWrapper<T> {
+    text: String,
+    offset: u32,
+    limit: u32,
+    options: Vec<Suggestion<T>>
+}
+
+/** Type Struct to hold a generic `serde_json::Value` tree of the suggester results. */
+#[derive(Deserialize, Debug)]
+struct SuggestWrapper(Value);
+
+pub struct Suggest<T> {
+    inner: BTreeMap<&'a str, SuggestionWrapper<T>>
+}
+
+impl<T> Suggest<T> {
+    fn new(suggest: Option<&SuggestWrapper>) -> Self {
+        let pairs = {
+            match suggest.and_then(|sugs| sugs.0.as_object()) {
+                Some(o) => o.into_iter()
+                    .filter_map(|(key, value)| {
+                        value.as_array()
+                            .and_then(|vec| vec[0])
+                            .and_then(|raw_wrap| serde_json::from_value::<Self::Item>(raw_wrap).ok())
+                            .and_then(|wrap| (key, wrap))
+                    })
+                    .collect(),
+                None => Vec::new()
+            }
+        };
+
+        Self {
+            inner: BTreeMap::from_iter(pairs)
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<SuggestionWrapper<T>> {
+        self.inner.get(key)
+    }
+}
+
+impl<T> Iterator for Suggest<T> {
+    type Item = SuggestionWrapper<T>;
+
+    fn next(&mut self) -> Option<SuggestionWrapper<T>> {
+        self.inner.next().and_then(|(_key, wrap)| wrap)
+    }
+}
+
 /** Type Struct to hold a generic `serde_json::Value` tree of the aggregation results. */
 #[derive(Deserialize, Debug)]
 struct AggsWrapper(Value);
 
-/** 
+/**
 Aggregator that traverses the results from Elasticsearch's aggregations and returns a result row by row in a table-styled fashion.
 */
 #[derive(Debug)]
