@@ -2,7 +2,7 @@
 Response types for a [search request](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html).
 */
 
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json;
 use serde_json::{Map, Value};
 
@@ -352,20 +352,23 @@ pub struct SuggestionWrapper<T> {
 #[derive(Deserialize, Debug)]
 struct SuggestWrapper(Value);
 
-pub struct Suggest<T> {
+pub struct Suggest<'a, T> {
     inner: BTreeMap<&'a str, SuggestionWrapper<T>>
 }
 
-impl<T> Suggest<T> {
+impl<'a, T: 'a> Suggest<'a, T>
+where T: Deserialize<'a> {
     fn new(suggest: Option<&SuggestWrapper>) -> Self {
         let pairs = {
             match suggest.and_then(|sugs| sugs.0.as_object()) {
                 Some(o) => o.into_iter()
                     .filter_map(|(key, value)| {
                         value.as_array()
-                            .and_then(|vec| vec[0])
-                            .and_then(|raw_wrap| serde_json::from_value::<Self::Item>(raw_wrap).ok())
-                            .and_then(|wrap| (key, wrap))
+                            .and_then(|vec| Some(vec[0]) )
+                            .and_then(|raw_wrap| {
+                                Some(serde_json::from_value::<SuggestionWrapper<T>>(raw_wrap).ok())
+                            })
+                            .and_then(|wrap| Some((key, wrap)))
                     })
                     .collect(),
                 None => Vec::new()
@@ -382,10 +385,10 @@ impl<T> Suggest<T> {
     }
 }
 
-impl<T> Iterator for Suggest<T> {
+impl<'a, T> Iterator for Suggest<'a, T> {
     type Item = SuggestionWrapper<T>;
-
-    fn next(&mut self) -> Option<SuggestionWrapper<T>> {
+    
+    fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().and_then(|(_key, wrap)| wrap)
     }
 }
