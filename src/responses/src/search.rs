@@ -2,7 +2,7 @@
 Response types for a [search request](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html).
 */
 
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::de::DeserializeOwned;
 use serde_json;
 use serde_json::{Map, Value};
 
@@ -12,6 +12,7 @@ use error::*;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::iter::FromIterator;
 use std::slice::Iter;
 use std::vec::IntoIter;
 
@@ -148,7 +149,8 @@ impl<T> SearchResponse<T> {
 
     This Iterator transforms the tree-like JSON object into a row/table based format for use with standard iterator adaptors.
     */
-    pub fn suggest(&self) -> Suggest<T> {
+    pub fn suggest(&self) -> Suggest<T>
+    where T: Deserialize<'_> {
         Suggest::new(self.suggest.as_ref())
     }
 
@@ -307,7 +309,7 @@ pub struct Suggestion<T> {
     #[serde(rename = "_routing")] routing: Option<String>,
 }
 
-impl<T> Suggestion<T> {
+impl<T: DeserializeOwned> Suggestion<T> {
     /** The suggested term */
     pub fn text(&self) -> &str {
         &self.text
@@ -352,19 +354,18 @@ pub struct SuggestionWrapper<T> {
 #[derive(Deserialize, Debug)]
 struct SuggestWrapper(Value);
 
-pub struct Suggest<'a, T> {
-    inner: BTreeMap<&'a str, SuggestionWrapper<T>>
+pub struct Suggest<T> {
+    inner: BTreeMap<&str, SuggestionWrapper<T>>
 }
 
-impl<'a, T: 'a> Suggest<'a, T>
-where T: Deserialize<'a> {
+impl<T: DeserializeOwned> Suggest<T> {
     fn new(suggest: Option<&SuggestWrapper>) -> Self {
         let pairs = {
             match suggest.and_then(|sugs| sugs.0.as_object()) {
                 Some(o) => o.into_iter()
                     .filter_map(|(key, value)| {
                         value.as_array()
-                            .and_then(|vec| Some(vec[0]) )
+                            .and_then(|vec| Some(vec[0]))
                             .and_then(|raw_wrap| {
                                 Some(serde_json::from_value::<SuggestionWrapper<T>>(raw_wrap).ok())
                             })
@@ -385,9 +386,9 @@ where T: Deserialize<'a> {
     }
 }
 
-impl<'a, T> Iterator for Suggest<'a, T> {
+impl<T> Iterator for Suggest<T> {
     type Item = SuggestionWrapper<T>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().and_then(|(_key, wrap)| wrap)
     }
